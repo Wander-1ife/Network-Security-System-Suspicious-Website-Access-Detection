@@ -2,6 +2,10 @@ import asyncio
 import threading
 import datetime
 import os
+import smtplib
+import ssl
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 import pyshark
 from scapy.all import sniff
 from scapy.layers.http import HTTPRequest
@@ -20,9 +24,52 @@ LOG_HISTORY_LIMIT = 500  # Keep last 500 entries in logs
 
 log_entries = deque(maxlen=LOG_HISTORY_LIMIT)
 
+# Email Configuration
+SENDER_EMAIL = "your_email@gmail.com"  # Replace with your email
+SENDER_PASSWORD = "your_password"  # Replace with your email password
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 465
+RECEIVER_EMAIL = "receiver_email@gmail.com"  # Replace with recipient email
+
+def send_email(domain, src_ip, dst_ip):
+    """Sends an alert email when suspicious activity is detected."""
+    subject = "[ALERT] Suspicious Network Activity Detected"
+    html = f"""
+    <html>
+    <head><title>Security Alert</title></head>
+    <body>
+        <p><b>Dear User,</b></p>
+        <p>Suspicious network activity has been detected.</p>
+        <p><b>Details:</b></p>
+        <ul>
+            <li><b>Suspicious Domain:</b> {domain}</li>
+            <li><b>Source IP:</b> {src_ip}</li>
+            <li><b>Destination IP:</b> {dst_ip}</li>
+            <li><b>Timestamp:</b> {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</li>
+        </ul>
+        <p>Please review your network security immediately.</p>
+        <p>Best regards,<br>Security Team</p>
+    </body>
+    </html>
+    """
+    msg = MIMEMultipart()
+    msg["Subject"] = subject
+    msg["From"] = SENDER_EMAIL
+    msg["To"] = RECEIVER_EMAIL
+    msg.attach(MIMEText(html, "html"))
+    
+    context = ssl.create_default_context()
+    try:
+        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, context=context) as server:
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.sendmail(SENDER_EMAIL, RECEIVER_EMAIL, msg.as_string())
+        print(f"[EMAIL ALERT] Sent to {RECEIVER_EMAIL}")
+    except Exception as e:
+        print(f"Error sending email alert: {e}")
+
 
 def log_traffic(domain, src_ip, dst_ip, is_suspicious=False):
-    #Logs network traffic with timestamps, IPs, and domain information.
+    """Logs network traffic with timestamps, IPs, and domain information."""
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_entry = f"[{timestamp}] {src_ip} -> {dst_ip} | {domain} {'(SUSPICIOUS)' if is_suspicious else ''}"
 
@@ -34,10 +81,11 @@ def log_traffic(domain, src_ip, dst_ip, is_suspicious=False):
         print(f"[ALERT] Suspicious Access: {domain} from {src_ip} to {dst_ip} at {timestamp}")
         with open(SUSPICIOUS_LOG_FILE, "a") as alert_file:
             alert_file.write(log_entry + "\n")
+        send_email(domain, src_ip, dst_ip)
 
 
 def extract_http_domain(packet):
-    #Extracts and logs HTTP domains.
+    """Extracts and logs HTTP domains."""
     if packet.haslayer(HTTPRequest):
         try:
             host = packet[HTTPRequest].Host.decode() if packet[HTTPRequest].Host else None
@@ -51,7 +99,7 @@ def extract_http_domain(packet):
 
 
 def start_http_sniffing():
-    #Starts HTTP traffic sniffing asynchronously.
+    """Starts HTTP traffic sniffing asynchronously."""
     try:
         sniff(filter="tcp port 80", prn=extract_http_domain, store=False)
     except KeyboardInterrupt:
@@ -59,7 +107,7 @@ def start_http_sniffing():
 
 
 def extract_https_domain(packet):
-    #Extracts and logs HTTPS domains (TLS SNI)
+    """Extracts and logs HTTPS domains (TLS SNI)."""
     try:
         domain = getattr(packet.tls, "handshake_extensions_server_name", None)
         src_ip = packet.ip.src if hasattr(packet, "ip") else "Unknown"
@@ -74,7 +122,7 @@ def extract_https_domain(packet):
 
 
 def start_https_sniffing():
-    #Starts HTTPS traffic sniffing with a new asyncio event loop
+    """Starts HTTPS traffic sniffing with a new asyncio event loop."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
